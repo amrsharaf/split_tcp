@@ -1,4 +1,6 @@
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -15,44 +17,45 @@ public class BaseStation {
 	public static int BS_TO_FH_PORT = 9090;
 	public static int BS_TO_FH_ACK_PORT = 9091;
 	public static int BS_TO_MH_PORT = 9092;
-	private final int ACK_LEN = 1 << 10;
 
-	private Queue<byte[]> q;
+	private Queue<Packet> q;
 
 	private Thread fhAgent;
 	private Thread mhAgent;
 	
-	private int pktCount;
 	private int fhSocketPort;
-	private int fhE2eAckSocketPort;
+	private int fhEndAckSocketPort;
 	private int mhSocketPort;
 	private int rto;
+	private int seqNo;
 	private double fhPlp;
 	private double mhPlp;
 	
-	private DatagramSocket fhSocket;
-	private DatagramSocket fhE2eAckSocket;
+	private DatagramSocket fhSenderSocket;
+	private DatagramSocket fhEndAckSenderSocket;
 	private DatagramSocket mhSocket;
 	private InetSocketAddress fhSocketAddress;
 	private InetSocketAddress mhSocketAddress;
-
+	private InetSocketAddress fhEndAckSocketAddress;
+	
 	public BaseStation(int rto, double fhPlp, double mhPlp){
 		this.rto = rto;
 		this.fhPlp = fhPlp;
 		this.mhPlp = mhPlp;
-		this.pktCount = 0;
-		this.q = new LinkedList<byte[]>();
-
+		this.q = new LinkedList<Packet>();
+		this.seqNo = -1;
+		
 		this.fhSocketPort = FixedHost.FH_TO_BS_PORT;
 		this.mhSocketPort = MobileHost.MH_TO_BS_PORT;
-		this.fhE2eAckSocketPort = FixedHost.FH_E2E_PORT;
+		this.fhEndAckSocketPort = FixedHost.FH_E2E_PORT;
 
 		try {
 			fhSocketAddress = new InetSocketAddress(InetAddress.getLocalHost(), fhSocketPort);
-			fhSocket = new DatagramSocket(BS_TO_FH_PORT);
-//			fhSocket.setSoTimeout(this.rto);
-			fhE2eAckSocket = new DatagramSocket(BS_TO_FH_ACK_PORT);
-//			fhE2eAckSocket.setSoTimeout(this.rto);
+			fhSenderSocket = new DatagramSocket(BS_TO_FH_PORT);
+
+			fhEndAckSocketAddress = new InetSocketAddress(InetAddress.getLocalHost(), fhEndAckSocketPort);
+			fhEndAckSenderSocket = new DatagramSocket(BS_TO_FH_ACK_PORT);
+
 			mhSocketAddress = new InetSocketAddress(InetAddress.getLocalHost(), mhSocketPort);
 			mhSocket = new DatagramSocket(BS_TO_MH_PORT);
 			mhSocket.setSoTimeout(this.rto);
@@ -63,36 +66,76 @@ public class BaseStation {
 		}
 	}
 
-	private synchronized void qAdd(byte[] data){
-		q.add(data);
+	private synchronized void qAdd(Packet pkt){
+		q.add(pkt);
+		if(q.size()==1)
+			notify();
 	}
 	
-	private synchronized byte[] qPoll(){
+	private synchronized Packet qPoll(){
+		if(q.isEmpty()){
+			try {
+				wait();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
 		return q.poll();
 	}
 	
-	private synchronized byte[] qPeek(){
+	private synchronized Packet qPeek(){
+		if(q.isEmpty()){
+			try {
+				wait();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
 		return q.peek();
 	}
 	
-	private synchronized boolean qIsEmpty(){
-		return q.isEmpty();
+	
+	private Packet extractPacket(DatagramPacket dgPkt) throws IOException{
+		ByteArrayInputStream bais = new ByteArrayInputStream(dgPkt.getData());
+		ObjectInputStream ois = new ObjectInputStream(bais);
+		Packet pkt = null;
+		try {
+			pkt = (Packet) ois.readObject();
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+		}
+		
+		return pkt;
 	}
 	
 	private boolean receiveDataFromFH(){
 		System.err.println("BS: Waiting for a new packet to arrive");
-		int maxSize = (1<<10) * FixedHost.MSS; //XXX assumption!!
+		int maxSize = (1<<10) * FixedHost.MSS; //XXX upper limit assumption!!
 		byte[] buf = new byte[maxSize];
-		DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+		DatagramPacket dgPkt = new DatagramPacket(buf, buf.length);
 		try {
-			fhSocket.receive(pkt);
+			fhSenderSocket.receive(dgPkt);
 		} catch (IOException e) {
 			e.printStackTrace();
 			return false;
 		}
 		
-		System.err.println("BS: Received packet #" + pktCount++);
-		qAdd(pkt.getData());
+		Packet pkt;
+		try {
+			pkt = extractPacket(dgPkt);
+		} catch (IOException e) {
+			e.printStackTrace();
+			return false;
+		}
+		System.err.println("BS: Received packet #" + pkt.getId());
+
+		if(pkt.getId() == seqNo){
+			System.err.println("BS: Duplicated packet, ignore it but send a LACK for it");
+		} else if(pkt.getId() == 0 || pkt.getId()>seqNo){ //if id == 0, this means new file
+			seqNo = pkt.getId();
+			qAdd(new Packet(pkt.getId(), dgPkt.getData()));
+		}
+		
 		return true;
 	}
 	
@@ -100,16 +143,16 @@ public class BaseStation {
 		double p = Math.random();
 		return p > plp;
 	}
-	
-	private void sendLACK(){
-		DatagramPacket pkt = null;
+
+	private void sendAck(DatagramSocket senderSocket, InetSocketAddress address, String ackName){
+		DatagramPacket dgPkt = null;
 		try {
-			pkt = new DatagramPacket(new byte[0], 0, fhSocketAddress);
-			System.err.println("BS: Sending LACK");
+			dgPkt = new DatagramPacket(new byte[0], 0, address);
+			System.err.println("BS: Sending " + ackName);
 			if(canSend(this.fhPlp)){
-				fhSocket.send(pkt);
+				senderSocket.send(dgPkt);
 			} else{
-				System.err.println("BS: LACK packet dropped");
+				System.err.println("BS: " + ackName + " packet dropped");
 			}
 		} catch (SocketException e) {
 			e.printStackTrace();
@@ -118,20 +161,25 @@ public class BaseStation {
 		}		
 	}
 	
+	private void sendLACK(){
+		sendAck(fhSenderSocket, fhSocketAddress, "LACK");
+	}
+	
 	private boolean waitForLACK() {
 		System.err.println("BS: Waiting for LACK");
-		byte[] buf = new byte[ACK_LEN];
 		// XXX No need for an actual message, a dummy message would be
 		// sufficient!
-		DatagramPacket dummyPkt = new DatagramPacket(buf, buf.length);
+		DatagramPacket dummyPkt = new DatagramPacket(new byte[0], 0);
 		try {
 			mhSocket.receive(dummyPkt);
 			System.err.println("BS: Received LACK");
+			qPoll();
 		} catch (SocketTimeoutException e) { // timeout occured
 			System.err.println("BS: Timeout. Retransmission required");
 			return false;
 		} catch (IOException e) {
 			e.printStackTrace();
+			return false;
 		}
 
 		return true;
@@ -145,44 +193,42 @@ public class BaseStation {
 		}
 	}
 	
-	private void mhHandler(){
-		boolean success = true;
-		byte[] data = null;
+	private void sendEndAck(){
+		sendAck(fhEndAckSenderSocket, fhEndAckSocketAddress, "end-to-end ACK");
+	}
+	
+	private void send(Packet pkt, InetSocketAddress address){
+		DatagramPacket dgPkt = null;
+		boolean success = false;
+		byte[] data = pkt.getData();
 		
-		while(true){
-			if(qIsEmpty()){
-				try {
-					this.wait();
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-			}			
-			
-			DatagramPacket pkt = null;
-			if(success){
-				data = qPoll();
-			}else{
-				//leave data[] as is for retransmission
-			}
-
-			
+		while(!success){
 			try {
-				pkt = new DatagramPacket(data, data.length, mhSocketAddress);
+				dgPkt = new DatagramPacket(data, data.length, address);
+				System.err.println("BS: Sending packet #" + pkt.getId());
+				if(canSend(mhPlp)){
+					mhSocket.send(dgPkt);
+				} else{
+					System.err.println("BS: Packet #" + pkt.getId() + " dropped");
+				}
 			} catch (SocketException e) {
+				e.printStackTrace();
+			} catch (IOException e){
 				e.printStackTrace();
 			}
 
-			if(canSend(mhPlp)){
-				try {
-					mhSocket.send(pkt);
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			} else{
-				//packet dropped
-			}
-
 			success = waitForLACK();
+		}
+		
+		sendEndAck();
+	}
+	
+	private void mhHandler(){
+		Packet pkt = null;
+		
+		while(true){	
+			pkt = qPeek();
+			send(pkt, mhSocketAddress);
 		}
 	}
 	
@@ -202,12 +248,12 @@ public class BaseStation {
 		});
 		
 		fhAgent.start();
-//		mhAgent.start();
+		mhAgent.start();
 	}
 	
 	public static void main(String[] args) {
 		double plp = 0.1;
-		int rto = 5; //seconds
+		int rto = 1*1000; //melliseconds
 		new BaseStation(rto, plp, plp).run();
 	}
 }

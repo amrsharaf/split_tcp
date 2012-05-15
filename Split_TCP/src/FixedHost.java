@@ -1,7 +1,9 @@
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.ObjectOutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -21,9 +23,10 @@ public class FixedHost {
 	private int slowStartThreshold;
 	private int mss;
 	private int rto;
-	private Queue<DatagramPacket> q; 
+	private Queue<Packet> q; 
 	private double plp;
-
+	private int pktId;
+	
 	private int dataSocketPort;
 	private int e2eAckSocketPort;
 	private DatagramSocket dataSocket;
@@ -32,7 +35,7 @@ public class FixedHost {
 
 	// TODO: set the defaults for the following constants
 	public static final int MSS = 1 << 10; // 1 KB
-	private static final int RTO = 5; // in seconds
+	private static final int RTO = 1*1000; // in melliseconds
 	private static final int SLOW_START_THRESHOLD = 8;
 	private final int ACK_LEN = 1 << 10;
 
@@ -52,7 +55,7 @@ public class FixedHost {
 		this.rto = rto;
 		this.plp = plp;
 
-		q = new LinkedList<DatagramPacket>();
+		q = new LinkedList<Packet>();
 
 		this.dataSocketPort = dataSocketPort;
 		this.e2eAckSocketPort = e2eAckSocketPort;
@@ -138,6 +141,47 @@ public class FixedHost {
 		return q.size() == e2ewnd;
 	}
 
+	private DatagramPacket preparePacket(Packet pkt, InetSocketAddress address) throws IOException{
+		ByteArrayOutputStream baos = new ByteArrayOutputStream(pkt.getData().length + 4);
+		ObjectOutputStream oos = new ObjectOutputStream(baos);
+		oos.writeObject(pkt);
+		oos.close();
+		byte[] data = baos.toByteArray();
+//		System.err.println("dataaaaa = " + data.length + " from " + pkt.getData().length);
+		return new DatagramPacket(data, data.length, address);
+	}
+	
+	private void send(byte[] data) throws IOException{
+		
+		if (isBufferFull()) {
+			System.err.println("FH: buffer is full");
+			waitForE2EAck();
+		}
+
+		boolean success = false;
+		Packet pkt = new Packet(pktId++, data);
+		q.add(pkt);
+		DatagramPacket dgPkt = preparePacket(pkt, bsSocketAddress);
+		boolean retransmit = false;
+		while(!success){
+			System.err.println("-------------------------------------------\n");
+			if(retransmit){
+				System.err.println("FH: Re-transmitting packet #" + pkt.getId()); //XXX : didn't reduce the packet size yet!!
+			} else{
+				System.err.println("FH: Sending packet #" + pkt.getId() + ", packet size = " + cwnd + " * " + mss + " Bytes [actual = " + dgPkt.getData().length + "]");
+			}
+			
+			if (canSend()){
+				dataSocket.send(dgPkt);
+			} else{
+				System.err.println("FH: Packet #" + pkt.getId() + " dropped");
+			}
+
+			success = waitForLACK();
+			controlCongestionWindow(success);
+		}
+	}
+	
 	public void sendFile(String fileName) throws IOException {
 		File file = new File(fileName);
 		if (!file.exists()) {
@@ -153,53 +197,27 @@ public class FixedHost {
 		 * sending the file name
 		 */
 		DataInputStream dis = new DataInputStream(new FileInputStream(file));
-		boolean success = true;
 		byte[] chunk;
-		DatagramPacket pkt = null;
 		
-		int pktId = 0;
+		this.pktId = 0;
 		while (true) {
-		
-			if (success) {
-				if (isBufferFull()) {
-					System.err.println("FH: buffer is full");
-					//XXX uncomment that line
-//					waitForE2EAck();
-				}
-
-				chunk = new byte[cwnd * mss];
-				int pktSize = dis.read(chunk);
-				if (pktSize <= 0){
-					System.err.println("FH: File transmission completed");
-					break;
-				}
-
-				pkt = new DatagramPacket(chunk, pktSize, bsSocketAddress);
-				q.add(pkt);
-				
-				System.err.println("-------------------------------------------\n");
-				pktId++;
-				System.err.println("FH: Sending packet #" + pktId + ", packet size = " + cwnd + " * " + mss + " Bytes");
-			} else {
-				// leave chunk and pkt as is for retransmission
-				System.err.println("FH: Re-transmitting packet #" + pktId + ", packet size = " + cwnd + " * " + mss + " Bytes");
+			chunk = new byte[cwnd * mss];
+			int pktSize = dis.read(chunk);
+			if (pktSize <= 0){
+				System.err.println("FH: File transmission completed");
+				break;
 			}
 			
-			if (canSend()){
-				dataSocket.send(pkt);
-			} else{
-				System.err.println("FH: Packet #" + pktId + " dropped");
-			}
-
-			success = waitForLACK();
-			controlCongestionWindow(success);
+			send(chunk);
 		}
+		
+		//TODO: send an empty packet so that the MH would close its stream..
 	}
 	
 	public static void main(String[] args) throws Exception {
 		String fileName = null;
-//		fileName = "TRON Legacy-Derezzed.flv";
-		fileName = "AdvancedNetworksProject.pdf";
+//		fileName = "testFiles/TRON Legacy-Derezzed.flv";
+		fileName = "testFiles/AdvancedNetworksProject.pdf";
 		InetSocketAddress bsAddress = new InetSocketAddress(InetAddress.getLocalHost(), BaseStation.BS_TO_FH_PORT);
 		FixedHost fh = new FixedHost(MobileHost.E2E_WND, 0.1, 7070, 7071, bsAddress);
 		fh.sendFile(fileName);
