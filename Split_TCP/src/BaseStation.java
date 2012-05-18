@@ -17,7 +17,8 @@ public class BaseStation {
 	public static int BS_TO_FH_PORT = 9090;
 	public static int BS_TO_FH_ACK_PORT = 9091;
 	public static int BS_TO_MH_PORT = 9092;
-
+	private static final int RTO = 1*1000; // in melliseconds
+	
 	private Queue<Packet> q;
 
 	private Thread fhAgent;
@@ -153,11 +154,11 @@ public class BaseStation {
 		try {
 			dgPkt = new DatagramPacket(new byte[0], 0, address);
 			System.err.println("BS: Sending " + ackName);
-			if(canSend(this.fhPlp)){
+//			if(canSend(this.fhPlp)){
 				senderSocket.send(dgPkt);
-			} else{
-				System.err.println("BS: " + ackName + " packet dropped");
-			}
+//			} else{
+//				System.err.println("BS: " + ackName + " packet dropped");
+//			}
 		} catch (SocketException e) {
 			e.printStackTrace();
 		} catch (IOException e) {
@@ -205,7 +206,7 @@ public class BaseStation {
 		DatagramPacket dgPkt = null;
 		boolean success = false;
 		byte[] data = pkt.getData();
-		System.err.println(data.length);
+		
 		while(!success){
 			try {
 				dgPkt = new DatagramPacket(data, data.length, address);
@@ -224,8 +225,8 @@ public class BaseStation {
 			success = waitForLACK();
 		}
 		
-		//XXX uncomment that
-//		sendEndAck();
+		if((pkt.getId() % MobileHost.E2E_WND) == 0)
+			sendEndAck();
 	}
 	
 	private void mhHandler(){
@@ -258,7 +259,6 @@ public class BaseStation {
 	
 	public static void main(String[] args) {
 		double plp = 0.1;
-		int rto = 1*1000; //melliseconds
-		new BaseStation(rto, plp, plp).run();
+		new BaseStation(BaseStation.RTO, plp, plp).run();
 	}
 }

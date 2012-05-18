@@ -17,6 +17,7 @@ public class FixedHost {
 
 	public static int FH_TO_BS_PORT = 7070;
 	public static int FH_E2E_PORT = 7071;
+	public static final int MSS = 1 << 10; // 1 KB
 	
 	private int cwnd;
 	private int e2ewnd;
@@ -33,12 +34,10 @@ public class FixedHost {
 	private DatagramSocket e2eAckSocket;
 	private InetSocketAddress bsSocketAddress;
 
-	// TODO: set the defaults for the following constants
-	public static final int MSS = 1 << 10; // 1 KB
 	private static final int RTO = 1*1000; // in melliseconds
 	private static final int SLOW_START_THRESHOLD = 8;
-	private final int ACK_LEN = 1 << 10;
-
+	private final int ACK_LEN = 0;
+	
 	public FixedHost(int e2ewnd, double plp, int dataSocketPort,
 			int e2eAckSocketPort, InetSocketAddress bsSocketAddress) {
 		this(e2ewnd, SLOW_START_THRESHOLD, RTO, plp, dataSocketPort,
@@ -108,8 +107,7 @@ public class FixedHost {
 	private boolean waitForLACK() {
 		System.err.println("FH: Waiting for LACK");
 		byte[] buf = new byte[ACK_LEN];
-		// XXX No need for an actual message, a dummy message would be
-		// sufficient!
+		// No need for an actual message, a dummy message would be sufficient!
 		DatagramPacket dummyPkt = new DatagramPacket(buf, buf.length);
 		try {
 			dataSocket.receive(dummyPkt);
@@ -127,13 +125,16 @@ public class FixedHost {
 	private void waitForE2EAck() {
 		System.err.println("FH: Waiting for end-to-end ACK");
 		byte[] buf = new byte[ACK_LEN];
-		// XXX No need for an actual message, a dummy message would be
-		// sufficient!
+		// No need for an actual message, a dummy message would be sufficient!
 		DatagramPacket dummyPkt = new DatagramPacket(buf, buf.length);
 		try {
 			e2eAckSocket.receive(dummyPkt);
 			System.err.println("FH: Received end-to-end ACK");
-			q.poll();
+			
+			for(int i=Math.min(MobileHost.E2E_WND, q.size()); i>0; i--){
+				q.poll();
+			}
+			
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -149,40 +150,50 @@ public class FixedHost {
 		oos.writeObject(pkt);
 		oos.close();
 		byte[] data = baos.toByteArray();
-//		System.err.println("dataaaaa = " + data.length + " from " + pkt.getData().length);
+
+		//XXX actually packet size is > the cwnd*mss slightly due to the packet id + serialization
 		return new DatagramPacket(data, data.length, address);
-		//XXX data size is > the cwnd*mss slightly...
 	}
 	
-	private void send(byte[] data) throws IOException{
+	private boolean send(byte[] data) throws IOException{
 		if (isBufferFull()) {
 			System.err.println("FH: buffer is full");
-			//XXX uncomment that line
-//			waitForE2EAck();
+			waitForE2EAck();
 		}
 
 		boolean success = false;
-		Packet pkt = new Packet(pktId++, data);
-		q.add(pkt);
+		Packet pkt = new Packet(pktId, data);
+		
 		DatagramPacket dgPkt = preparePacket(pkt, bsSocketAddress);
-		boolean retransmit = false;
-		while(!success){
-			System.err.println("-------------------------------------------\n");
-			if(retransmit){
-				System.err.println("FH: Re-transmitting packet #" + pkt.getId()); //XXX : didn't reduce the packet size yet!!
-			} else{
-				System.err.println("FH: Sending packet #" + pkt.getId() + ", packet size = " + cwnd + " * " + mss + " Bytes [actual = " + dgPkt.getData().length + "]");
-			}
-			
-			if (canSend()){
-				dataSocket.send(dgPkt);
-			} else{
-				System.err.println("FH: Packet #" + pkt.getId() + " dropped");
-			}
-
-			success = waitForLACK();
-			controlCongestionWindow(success);
+		
+		if(data.length == 0)
+			System.err.println("FH: Sending an empty packet to denote end of transmission");
+		else 
+			System.err.println("FH: Sending packet #" + pkt.getId() + ", packet size = " + cwnd + " * " + mss + " Bytes [actual = " + dgPkt.getData().length + "]");
+		
+		if (canSend()){
+			dataSocket.send(dgPkt);
+		} else{
+			System.err.println("FH: Packet #" + pkt.getId() + " dropped");
 		}
+
+		success = waitForLACK();
+		controlCongestionWindow(success);
+
+		if(success){ //pkt will reside in buffer till we get end-to-end ack
+			q.add(pkt);
+		}
+		
+		return success;
+	}
+	
+	private byte[] readChunk(byte[] fileData, int startIndex, int size){
+		if(size <= 0)
+			return new byte[0];
+		
+		byte[] chunk = new byte[size];
+		System.arraycopy(fileData, startIndex, chunk, 0, size);
+		return chunk;
 	}
 	
 	public void sendFile(String fileName) throws IOException {
@@ -192,45 +203,50 @@ public class FixedHost {
 			return;
 		}
 
-		//XXX: 
-		/*
-		 * what about:
-		 * establishing the connection (should i receive a request? or send a request or??)
-		 * closing the connection so that the MH wouldn't wait for further data
-		 * sending the file name
-		 */
 		DataInputStream dis = new DataInputStream(new FileInputStream(file));
+
+		// This won't work for large files [out of memory exception]
+		byte[] data = new byte[(int) file.length()];
+		dis.read(data);
+		dis.close();
+		
+		int dataIndex = 0;
 		byte[] chunk;
 		
 		this.pktId = 0;
-		while (true) {
-			chunk = new byte[cwnd * mss];
-			int pktSize = dis.read(chunk);
-
+		boolean finished = false;
+		boolean success = false;
+		
+		while (!finished) {
+			///XXX problem, packet id and changing the packet content. Solved because acks don't get dropped..!
+			int pktSize = Math.min(cwnd * mss, data.length - dataIndex);
+			chunk = readChunk(data, dataIndex, pktSize);
+			success = send(chunk);
+			
 			if (pktSize <= 0){
-				chunk = new byte[0];
-				System.err.println("FH: Sending an empty packet to denote end of transmission");
-				send(chunk);
-				System.err.println("FH: File transmission completed");
-				break;
-			} else if(pktSize < chunk.length){
-				byte[] tmp = new byte[pktSize];
-				for(int i=0; i<pktSize; i++)
-					tmp[i] = chunk[i];
-				chunk = tmp;
+				finished = success;				
+			}
+
+			System.err.println("-------------------------------------------\n");
+
+			if(success){
+				dataIndex += pktSize;
+				pktId++;
+			} else{
+				System.err.println("FH: Re-transmitting packet #" + pktId);
 			}
 			
-			send(chunk);
 		}
 		
-		//TODO: send an empty packet so that the MH would close its stream..
+		System.err.println("FH: File transmission completed");
 	}
 	
 	public static void main(String[] args) throws Exception {
 		String fileName = null;
+//		fileName = "testFiles/text.txt";
+//		fileName = "testFiles/AdvancedNetworksProject.pdf";
 //		fileName = "testFiles/TRON Legacy-Derezzed.flv";
-		fileName = "testFiles/AdvancedNetworksProject.pdf";
-//		fileName = "testFiles/TRON Legacy-Derezzed.flv";
+		fileName = "../AdvancedNetworksProject.pdf";
 		InetSocketAddress bsAddress = new InetSocketAddress(InetAddress.getLocalHost(), BaseStation.BS_TO_FH_PORT);
 		double plp = 0.1;
 		FixedHost fh = new FixedHost(MobileHost.E2E_WND, plp, 7070, 7071, bsAddress);

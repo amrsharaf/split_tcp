@@ -14,7 +14,7 @@ import java.net.UnknownHostException;
 
 public class MobileHost {
 	
-	public static int E2E_WND = 10;
+	public static int E2E_WND = 100;
 	public static int MH_TO_BS_PORT = 6060;
 	
 	private InetSocketAddress bsSocketAddress;
@@ -50,11 +50,11 @@ public class MobileHost {
 		try {
 			dgPkt = new DatagramPacket(new byte[0], 0, bsSocketAddress);
 			System.err.println("MH: Sending LACK");
-			if(canSend(this.bsPlp)){
+//			if(canSend(this.bsPlp)){
 				MHSocket.send(dgPkt);
-			} else{
-				System.err.println("MH: LACK packet dropped");
-			}
+//			} else{
+//				System.err.println("MH: LACK packet dropped");
+//			}
 		} catch (SocketException e) {
 			e.printStackTrace();
 		} catch (IOException e) {
@@ -77,7 +77,7 @@ public class MobileHost {
 	
 	private boolean receiveDataFromBS() throws IOException{
 		System.err.println("MH: Waiting for a new packet to arrive");
-		int maxSize = (1<<10) * FixedHost.MSS; //XXX upper limit assumption!!
+		int maxSize = MobileHost.E2E_WND * FixedHost.MSS; //upper limit for the packet size..
 		byte[] buf = new byte[maxSize];
 		DatagramPacket dgPkt = new DatagramPacket(buf, buf.length);
 		try {
@@ -105,7 +105,6 @@ public class MobileHost {
 			dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream("output")));
 		} else if(pkt.getId()>seqNo){
 			seqNo = pkt.getId();
-			System.err.println("lm: size of pkt#" + pkt.getId() + " = " + pkt.getData().length);
 		}
 
 		if(!duplicated){
