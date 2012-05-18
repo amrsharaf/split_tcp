@@ -14,7 +14,7 @@ import java.net.UnknownHostException;
 
 public class MobileHost {
 	
-	public static int E2E_WND = 5;
+	public static int E2E_WND = 10;
 	public static int MH_TO_BS_PORT = 6060;
 	
 	private InetSocketAddress bsSocketAddress;
@@ -105,13 +105,16 @@ public class MobileHost {
 			dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream("output")));
 		} else if(pkt.getId()>seqNo){
 			seqNo = pkt.getId();
+			System.err.println("lm: size of pkt#" + pkt.getId() + " = " + pkt.getData().length);
 		}
 
 		if(!duplicated){
-			if(pkt.getData() == null) //end of file
+			if(pkt.getData().length == 0){ //end of file
+				System.err.println("MH: Received EOF packet");
 				dos.close();
-			else
+			} else{
 				dos.write(pkt.getData());
+			}
 		}
 		
 		return true;
@@ -129,5 +132,9 @@ public class MobileHost {
 				sendLACK();
 		}
 	}
-	
+
+	public static void main(String[] args) {
+		double plp = 0.1;
+		new MobileHost(plp).run();
+	}
 }

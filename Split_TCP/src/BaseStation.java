@@ -101,6 +101,7 @@ public class BaseStation {
 		Packet pkt = null;
 		try {
 			pkt = (Packet) ois.readObject();
+			ois.close();
 		} catch (ClassNotFoundException e) {
 			e.printStackTrace();
 		}
@@ -133,7 +134,10 @@ public class BaseStation {
 			System.err.println("BS: Duplicated packet, ignore it but send a LACK for it");
 		} else if(pkt.getId() == 0 || pkt.getId()>seqNo){ //if id == 0, this means new file
 			seqNo = pkt.getId();
-			qAdd(new Packet(pkt.getId(), dgPkt.getData()));
+			byte[] data = new byte[dgPkt.getLength()];
+			System.arraycopy(dgPkt.getData(), 0, data, 0, dgPkt.getLength());
+//			qAdd(new Packet(pkt.getId(), dgPkt.getData()));
+			qAdd(new Packet(pkt.getId(), data));
 		}
 		
 		return true;
@@ -201,7 +205,7 @@ public class BaseStation {
 		DatagramPacket dgPkt = null;
 		boolean success = false;
 		byte[] data = pkt.getData();
-		
+		System.err.println(data.length);
 		while(!success){
 			try {
 				dgPkt = new DatagramPacket(data, data.length, address);
@@ -220,7 +224,8 @@ public class BaseStation {
 			success = waitForLACK();
 		}
 		
-		sendEndAck();
+		//XXX uncomment that
+//		sendEndAck();
 	}
 	
 	private void mhHandler(){

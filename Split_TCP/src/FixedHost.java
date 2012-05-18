@@ -100,6 +100,8 @@ public class FixedHost {
 			cwnd = 1;
 		}
 		
+		cwnd = Math.min(cwnd, MobileHost.E2E_WND);
+		
 		System.err.println("FH: cwnd = " + cwnd + ", slow start threshould = " + slowStartThreshold);
 	}
 
@@ -149,13 +151,14 @@ public class FixedHost {
 		byte[] data = baos.toByteArray();
 //		System.err.println("dataaaaa = " + data.length + " from " + pkt.getData().length);
 		return new DatagramPacket(data, data.length, address);
+		//XXX data size is > the cwnd*mss slightly...
 	}
 	
 	private void send(byte[] data) throws IOException{
-		
 		if (isBufferFull()) {
 			System.err.println("FH: buffer is full");
-			waitForE2EAck();
+			//XXX uncomment that line
+//			waitForE2EAck();
 		}
 
 		boolean success = false;
@@ -203,9 +206,18 @@ public class FixedHost {
 		while (true) {
 			chunk = new byte[cwnd * mss];
 			int pktSize = dis.read(chunk);
+
 			if (pktSize <= 0){
+				chunk = new byte[0];
+				System.err.println("FH: Sending an empty packet to denote end of transmission");
+				send(chunk);
 				System.err.println("FH: File transmission completed");
 				break;
+			} else if(pktSize < chunk.length){
+				byte[] tmp = new byte[pktSize];
+				for(int i=0; i<pktSize; i++)
+					tmp[i] = chunk[i];
+				chunk = tmp;
 			}
 			
 			send(chunk);
@@ -218,8 +230,10 @@ public class FixedHost {
 		String fileName = null;
 //		fileName = "testFiles/TRON Legacy-Derezzed.flv";
 		fileName = "testFiles/AdvancedNetworksProject.pdf";
+//		fileName = "testFiles/TRON Legacy-Derezzed.flv";
 		InetSocketAddress bsAddress = new InetSocketAddress(InetAddress.getLocalHost(), BaseStation.BS_TO_FH_PORT);
-		FixedHost fh = new FixedHost(MobileHost.E2E_WND, 0.1, 7070, 7071, bsAddress);
+		double plp = 0.1;
+		FixedHost fh = new FixedHost(MobileHost.E2E_WND, plp, 7070, 7071, bsAddress);
 		fh.sendFile(fileName);
 	}
 }
