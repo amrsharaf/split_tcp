@@ -14,7 +14,7 @@ import java.net.UnknownHostException;
 
 public class MobileHost {
 	
-	public static int E2E_WND = 100;
+	public static int E2E_WND = 50;
 	public static int MH_TO_BS_PORT = 6060;
 	
 	private InetSocketAddress bsSocketAddress;
@@ -23,6 +23,7 @@ public class MobileHost {
 	private int seqNo;
 	private int bsSocketPort;
 	private DataOutputStream dos = null;
+	private long sessionStartTime = 0;
 	
 	public MobileHost(double bsPlp){
 		this.bsPlp = bsPlp;
@@ -66,10 +67,13 @@ public class MobileHost {
 		ByteArrayInputStream bais = new ByteArrayInputStream(dgPkt.getData());
 		ObjectInputStream ois = new ObjectInputStream(bais);
 		Packet pkt = null;
+
 		try {
 			pkt = (Packet) ois.readObject();
 		} catch (ClassNotFoundException e) {
 			e.printStackTrace();
+		} finally{
+			ois.close();
 		}
 		
 		return pkt;
@@ -77,7 +81,7 @@ public class MobileHost {
 	
 	private boolean receiveDataFromBS() throws IOException{
 		System.err.println("MH: Waiting for a new packet to arrive");
-		int maxSize = MobileHost.E2E_WND * FixedHost.MSS; //upper limit for the packet size..
+		int maxSize = (MobileHost.E2E_WND+1) * FixedHost.MSS; //upper limit for the packet size..
 		byte[] buf = new byte[maxSize];
 		DatagramPacket dgPkt = new DatagramPacket(buf, buf.length);
 		try {
@@ -102,6 +106,8 @@ public class MobileHost {
 			duplicated = true;
 		} else if(pkt.getId() == 0 ){ //if id == 0, this means new file
 			seqNo = pkt.getId();
+			this.sessionStartTime = System.currentTimeMillis();
+			System.err.println("New MH session starts at System time = " + sessionStartTime);
 			dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream("output")));
 		} else if(pkt.getId()>seqNo){
 			seqNo = pkt.getId();
@@ -110,6 +116,10 @@ public class MobileHost {
 		if(!duplicated){
 			if(pkt.getData().length == 0){ //end of file
 				System.err.println("MH: Received EOF packet");
+				long sessionEnd = System.currentTimeMillis();
+				System.err.println("File transmission ended at System Time = " + sessionEnd);
+				double sessionDuration = (sessionEnd - sessionStartTime) /1000.0;
+				System.err.println("MH session duration = " + sessionDuration + " seconds");
 				dos.close();
 			} else{
 				dos.write(pkt.getData());

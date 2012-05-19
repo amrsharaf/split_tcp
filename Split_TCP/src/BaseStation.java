@@ -102,9 +102,10 @@ public class BaseStation {
 		Packet pkt = null;
 		try {
 			pkt = (Packet) ois.readObject();
-			ois.close();
 		} catch (ClassNotFoundException e) {
 			e.printStackTrace();
+		} finally{
+			ois.close();
 		}
 		
 		return pkt;
@@ -112,7 +113,7 @@ public class BaseStation {
 	
 	private boolean receiveDataFromFH(){
 		System.err.println("BS: Waiting for a new packet to arrive");
-		int maxSize = (1<<10) * FixedHost.MSS; //XXX upper limit assumption!!
+		int maxSize = (MobileHost.E2E_WND+1) * FixedHost.MSS; //XXX upper limit assumption!!
 		byte[] buf = new byte[maxSize];
 		DatagramPacket dgPkt = new DatagramPacket(buf, buf.length);
 		try {
@@ -206,7 +207,7 @@ public class BaseStation {
 		DatagramPacket dgPkt = null;
 		boolean success = false;
 		byte[] data = pkt.getData();
-		
+
 		while(!success){
 			try {
 				dgPkt = new DatagramPacket(data, data.length, address);

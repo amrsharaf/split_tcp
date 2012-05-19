@@ -217,6 +217,8 @@ public class FixedHost {
 		boolean finished = false;
 		boolean success = false;
 		
+		long sessionStart = System.currentTimeMillis();
+		System.err.println("FH session start at System time = " + sessionStart);
 		while (!finished) {
 			///XXX problem, packet id and changing the packet content. Solved because acks don't get dropped..!
 			int pktSize = Math.min(cwnd * mss, data.length - dataIndex);
@@ -238,6 +240,10 @@ public class FixedHost {
 			
 		}
 		
+		long sessionEnd = System.currentTimeMillis();
+		double sessionDuration = (sessionEnd - sessionStart) / 1000.0;
+		System.err.println("FH session ends at System time = " + sessionEnd);
+		System.err.println("FH session duration = " + sessionDuration + " seconds");
 		System.err.println("FH: File transmission completed");
 	}
 	
@@ -247,6 +253,7 @@ public class FixedHost {
 //		fileName = "testFiles/AdvancedNetworksProject.pdf";
 //		fileName = "testFiles/TRON Legacy-Derezzed.flv";
 		fileName = "../AdvancedNetworksProject.pdf";
+//		fileName = "testFiles/file1.flv";
 		InetSocketAddress bsAddress = new InetSocketAddress(InetAddress.getLocalHost(), BaseStation.BS_TO_FH_PORT);
 		double plp = 0.1;
 		FixedHost fh = new FixedHost(MobileHost.E2E_WND, plp, 7070, 7071, bsAddress);
